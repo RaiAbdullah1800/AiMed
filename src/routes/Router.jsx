@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import MainLayout from '../components/layout/MainLayout';
 import Login from '../pages/Login';
 import Signup from '../pages/Signup';
-import AllSections from '../sections/AllSections';
+import Chat from '../sections/Chat';
 import AdminPanel from '../pages/AdminPanel';
 import AdminGuard from '../guards/AdminGuard';
 import UserGuard from '../guards/UserGuard';
@@ -56,7 +56,7 @@ const Router = () => {
 
           {/* User routes */}
           <Route element={<UserGuard />}>  
-            <Route path="/chat" element={<AllSections />} />
+            <Route path="/chat" element={<Chat />} />
             <Route path="/appointments" element={<AppointmentBooking />} />
             <Route path="/text-to-voice" element={<TextToVoice />} />
           </Route>
