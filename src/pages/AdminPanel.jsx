@@ -114,7 +114,7 @@ const AdminPanel = () => {
               <Accordion key={chat.chat_id} sx={{ mb: 2 }}>
                 <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                   <Typography sx={{ fontWeight: 'bold' }}>
-                    {`Chat ID: ${chat.chat_id}`} • {new Date(chat.created_at).toLocaleString()}
+                    {`Chat ID: ${chat.chat_id}`}
                   </Typography>
                 </AccordionSummary>
                 <AccordionDetails>

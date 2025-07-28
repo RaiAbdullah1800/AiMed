@@ -33,6 +33,7 @@ const AppointmentBooking = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [refreshAppointments, setRefreshAppointments] = useState(0); // 🔄 New state to trigger re-fetch
 
   // Fetch doctors
   useEffect(() => {
@@ -51,7 +52,7 @@ const AppointmentBooking = () => {
       .then(res => setAppointments(res.data))
       .catch(err => setError(err.message || 'Failed to load appointments'))
       .finally(() => setLoadingAppointments(false));
-  }, [user?.id]);
+  }, [user?.id, refreshAppointments]); // 👈 Add dependency here
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -76,8 +77,9 @@ const AppointmentBooking = () => {
         res.data, 
         ...(Array.isArray(prevAppointments) ? prevAppointments : [])
       ]);
-      
+
       setSuccess('Appointment scheduled!');
+      setRefreshAppointments(prev => prev + 1); // 🔄 Trigger re-fetch
       
       // Reset form
       setForm({ doctor: '', datetime: '' });
@@ -140,7 +142,7 @@ const AppointmentBooking = () => {
               />
             </Grid>
 
-<Grid item xs={12}>
+            <Grid item xs={12}>
               <Button
                 type="submit"
                 variant="contained"
