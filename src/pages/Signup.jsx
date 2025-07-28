@@ -250,7 +250,7 @@ const Signup = () => {
               onChange={(e) => setRole(e.target.value)}
             >
               <MenuItem value="patient">Patient</MenuItem>
-              {/* <MenuItem value="doctor">Doctor</MenuItem> */}
+              <MenuItem value="doctor">Doctor</MenuItem>
               <MenuItem value="admin">Admin</MenuItem>
             </Select>
           </FormControl>
