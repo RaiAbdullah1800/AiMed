@@ -5,6 +5,9 @@ import { useSnackbar } from 'notistack';
 import { textToSpeechService } from '../services/textToSpeech';
 import { speechToTextService } from '../services/speechToTextService';
 
+// NEW: Import v4 from uuid to generate UUIDs
+import { v4 as uuidv4 } from 'uuid';
+
 const TextToVoice = () => {
   const [text, setText] = useState('');
   const [audioUrl, setAudioUrl] = useState('');
@@ -18,9 +21,16 @@ const TextToVoice = () => {
   const [socket, setSocket] = useState(null);
   const [mediaRecorder, setMediaRecorder] = useState(null);
 
-  const VOICE_TO_VOICE_WS_URL = "ws://192.168.100.25:8000/voice_to_voice/ws/3640315d-fd43-4f00-885c-f50a067674ec";
+// NEW: Define WS_BASE_URL from environment variables
+const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL;
+
+// Define the constant path part of the WebSocket URL
+// This should match your backend's expected WebSocket route.
+const VOICE_TO_VOICE_PATH = "/voice_to_voice/ws/";
   const [v2vSocket, setV2vSocket] = useState(null);
   const [v2vRecorder, setV2vRecorder] = useState(null);
+  // NEW: State to hold the MediaStream object for V2V
+  const [v2vStream, setV2vStream] = useState(null);
 
   const { enqueueSnackbar } = useSnackbar();
 
@@ -31,8 +41,12 @@ const TextToVoice = () => {
       if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
       if (v2vSocket) v2vSocket.close();
       if (v2vRecorder && v2vRecorder.state !== 'inactive') v2vRecorder.stop();
+      // NEW: Ensure media streams are also stopped to release mic on unmount
+      if (v2vStream) {
+        v2vStream.getTracks().forEach(track => track.stop());
+      }
     };
-  }, [socket, mediaRecorder, v2vSocket, v2vRecorder]);
+  }, [socket, mediaRecorder, v2vSocket, v2vRecorder, v2vStream]); // NEW: Added v2vStream to dependency array
 
   const handleConvert = async () => {
     if (!text.trim()) {
@@ -75,10 +89,14 @@ const TextToVoice = () => {
       ws.onclose = () => {
         enqueueSnackbar('STT disconnected', { variant: 'info' });
         setIsSttRecording(false);
+        // NEW: Stop the stream tracks for STT on close
+        stream.getTracks().forEach(track => track.stop());
       };
       ws.onerror = () => {
         enqueueSnackbar('STT error', { variant: 'error' });
         stopSttRecording();
+        // NEW: Stop the stream tracks for STT on error
+        stream.getTracks().forEach(track => track.stop());
       };
       recorder.ondataavailable = e => {
         if (ws.readyState === WebSocket.OPEN && e.data.size > 0) ws.send(e.data);
@@ -96,6 +114,10 @@ const TextToVoice = () => {
   const stopSttRecording = () => {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
     if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+    // NEW: Stop the actual microphone tracks for STT
+    if (mediaRecorder && mediaRecorder.stream) {
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
     setIsSttRecording(false);
     enqueueSnackbar('STT recording stopped', { variant: 'info' });
   };
@@ -103,15 +125,31 @@ const TextToVoice = () => {
   // --- Voice-to-Voice Handlers ---
   const startVoiceToVoice = async () => {
     try {
+      // NEW: Get user_id from localStorage
+      const userId = localStorage.getItem('user_id');
+      if (!userId) {
+        enqueueSnackbar('User ID not found in local storage. Cannot start V2V.', { variant: 'error' });
+        console.error('User ID not found in local storage.');
+        return; // Exit if no user ID
+      }
+
+      // NEW: Generate a new chat_id (UUID format)
+      const chatId = uuidv4();
+
+      // MODIFIED: Construct the WebSocket URL using environment variable and constant path
+      // We want "ws://host:port/path/to/ws/{user_id}/{chat_id}"
+      const fullWsUrl = `${WS_BASE_URL}${VOICE_TO_VOICE_PATH}${userId}/${chatId}`;
+
       console.log('Requesting microphone access...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setV2vStream(stream); // NEW: Store the stream object
       console.log('Microphone access granted, creating MediaRecorder...');
       const recorder = new MediaRecorder(stream);
       setV2vRecorder(recorder);
-      
-      console.log('Connecting to WebSocket at:', VOICE_TO_VOICE_WS_URL);
-      const ws = new WebSocket(VOICE_TO_VOICE_WS_URL);
-      
+
+      console.log('Connecting to WebSocket at:', fullWsUrl); // NEW: Log the full URL
+      const ws = new WebSocket(fullWsUrl); // NEW: Use the constructed URL
+
       ws.onopen = () => {
         console.log('WebSocket connection established');
         enqueueSnackbar('V2V connected', { variant: 'success' });
@@ -119,24 +157,64 @@ const TextToVoice = () => {
         recorder.start(1000);
         setIsV2vRecording(true);
       };
-      
-      ws.onmessage = event => {
+
+      // MODIFIED: ws.onmessage to handle base64 audio and autoplay
+      ws.onmessage = async event => { // Make onmessage async to use await
         console.group('WebSocket Message Received');
         console.log('Message type:', event.data instanceof Blob ? 'Blob' : typeof event.data);
         console.log('Message size (bytes):', event.data.size || 'N/A');
         console.log('Message data:', event.data);
-        
+
+        // Check if the message is a Blob (for direct audio data) or a string (for JSON)
         if (event.data instanceof Blob) {
           console.log('Blob type:', event.data.type);
           const url = URL.createObjectURL(event.data);
           console.log('Created object URL:', url);
           const audio = new Audio(url);
           console.log('Playing audio...');
+          audio.autoplay = true; // NEW: Ensure autoplay is set
           audio.play().catch(e => console.error('Error playing audio:', e));
+        } else if (typeof event.data === 'string') {
+            try {
+                const message = JSON.parse(event.data);
+                if (message.event === "media" && message.media && message.media.payload) {
+                    console.log('Decoding base64 audio payload...');
+                    // Deepgram typically sends base64 audio in `payload` with MIME type in `media.contentType`
+                    // However, your console log shows 'audio/mpeg' (ID3), so let's assume it's mp3 or similar
+                    // The base64 string usually doesn't include "data:audio/mpeg;base64," prefix.
+                    // If it did, you'd remove it first.
+                    // Here, we directly decode it assuming raw base64 data.
+
+                    const base64Audio = message.media.payload;
+
+                    // Convert base64 string to a binary string
+                    const binaryString = atob(base64Audio);
+                    // Convert binary string to an ArrayBuffer
+                    const len = binaryString.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    // Create a Blob from the ArrayBuffer.
+                    // IMPORTANT: You need to specify the correct MIME type.
+                    // Based on your console log, "audio/mpeg" seems likely.
+                    const audioBlob = new Blob([bytes.buffer], { type: 'audio/mpeg' });
+
+                    const url = URL.createObjectURL(audioBlob);
+                    console.log('Created object URL from base64:', url);
+                    const audio = new Audio(url);
+                    console.log('Playing audio from base64...');
+                    audio.autoplay = true; // NEW: Ensure autoplay
+                    // NEW: Use await with .play() to handle the promise and potential errors
+                    await audio.play().catch(e => console.error('Error playing base64 audio:', e));
+                }
+            } catch (jsonError) {
+                console.warn('Received non-JSON string or malformed JSON:', event.data, jsonError);
+            }
         }
         console.groupEnd();
       };
-      
+
       ws.onerror = error => {
         console.error('WebSocket Error:', error);
         enqueueSnackbar('V2V error', { variant: 'error' });
@@ -148,9 +226,9 @@ const TextToVoice = () => {
           protocol: ws.protocol,
           binaryType: ws.binaryType
         });
-        stopVoiceToVoice();
+        stopVoiceToVoice(); // NEW: Call stopVoiceToVoice on error
       };
-      
+
       ws.onclose = (event) => {
         console.log('WebSocket connection closed:', {
           code: event.code,
@@ -158,15 +236,15 @@ const TextToVoice = () => {
           wasClean: event.wasClean
         });
         enqueueSnackbar('V2V disconnected', { variant: 'info' });
-        setIsV2vRecording(false);
+        stopVoiceToVoice(); // NEW: Call stopVoiceToVoice on close
       };
-      
+
       recorder.ondataavailable = e => {
         console.group('MediaRecorder Data Available');
         console.log('Data size (bytes):', e.data.size);
         console.log('Data type:', e.data.type);
         console.log('Timestamp:', e.timeStamp);
-        
+
         if (ws.readyState === WebSocket.OPEN) {
           if (e.data.size > 0) {
             console.log('Sending audio data to WebSocket...');
@@ -180,7 +258,7 @@ const TextToVoice = () => {
         }
         console.groupEnd();
       };
-      
+
       setV2vSocket(ws);
       console.log('WebSocket and MediaRecorder initialized successfully');
     } catch (err) {
@@ -191,17 +269,54 @@ const TextToVoice = () => {
         stack: err.stack
       });
       enqueueSnackbar('Failed to start V2V', { variant: 'error' });
+      // NEW: Stop stream if starting fails
+      if (v2vStream) { // Check if stream was set before error
+          v2vStream.getTracks().forEach(track => track.stop());
+          setV2vStream(null); // Clear the stream state
+      }
+      setIsV2vRecording(false); // NEW: Ensure state is false if starting fails
     }
   };
 
   const stopVoiceToVoice = () => {
-    if (v2vRecorder && v2vRecorder.state !== 'inactive') v2vRecorder.stop();
-    if (v2vSocket && v2vSocket.readyState === WebSocket.OPEN) {
-      v2vSocket.send(new ArrayBuffer(0));
-      setTimeout(() => v2vSocket.close(), 300);
+    // NEW: Log actions for clarity
+    console.log('Attempting to stop Voice-to-Voice recording...');
+
+    // Stop the MediaRecorder
+    if (v2vRecorder && v2vRecorder.state !== 'inactive') {
+      v2vRecorder.stop();
+      console.log('MediaRecorder stopped.');
     }
+
+    // Close the WebSocket connection gracefully
+    if (v2vSocket && v2vSocket.readyState === WebSocket.OPEN) {
+      v2vSocket.send(new ArrayBuffer(0)); // Optional: Send empty buffer to signal end
+      setTimeout(() => {
+        v2vSocket.close();
+        console.log('WebSocket connection explicitly closed.');
+      }, 100); // Give a small delay for the last message
+    } else if (v2vSocket && v2vSocket.readyState !== WebSocket.CLOSED) {
+        // If it's not open but not yet closed (e.g., CLOSING), just ensure it's closed
+        v2vSocket.close();
+        console.log('WebSocket was not OPEN, forced close.');
+    }
+
+    // NEW: Stop the actual microphone tracks from the stream
+    if (v2vStream) {
+      v2vStream.getTracks().forEach(track => {
+        track.stop(); // This is the key to turning off the mic
+        console.log('Microphone track stopped.');
+      });
+      setV2vStream(null); // Clear the stream state
+    }
+
+    // Update UI state
     setIsV2vRecording(false);
     enqueueSnackbar('V2V recording stopped', { variant: 'info' });
+
+    // NEW: Clear state variables to allow new connection
+    setV2vRecorder(null);
+    setV2vSocket(null);
   };
 
   return (
@@ -237,7 +352,7 @@ const TextToVoice = () => {
         )}
       </Paper>
 
-      <Paper elevation={3} sx={{ p: 4, borderRadius: 2, mt: 4, minHeight: '30vh' }}>
+      {/* <Paper elevation={3} sx={{ p: 4, borderRadius: 2, mt: 4, minHeight: '30vh' }}>
         <Typography variant="h4" gutterBottom>Speech to Text</Typography>
         <Button
           variant="contained"
@@ -257,7 +372,7 @@ const TextToVoice = () => {
             sx={{ mt: 2 }}
           />
         )}
-      </Paper>
+      </Paper> */}
 
       <Paper elevation={3} sx={{ p: 4, borderRadius: 2, mt: 4, minHeight: '30vh' }}>
         <Typography variant="h4" gutterBottom>Voice to Voice</Typography>
